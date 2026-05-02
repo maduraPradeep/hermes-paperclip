@@ -1,0 +1,84 @@
+# Runs Hermes Agent + Paperclip side-by-side from the same combined image.
+#
+# Both services share the same image (hermes-paperclip:latest) but use
+# different entrypoints/commands and isolated data volumes.
+#
+# First-time setup:
+#   docker compose run --rm hermes setup        # Hermes API keys wizard
+#   docker compose run --rm paperclip onboard --yes   # Paperclip first-run
+#
+# Then:
+#   docker compose up -d
+#
+# Logs:
+#   docker compose logs -f hermes
+#   docker compose logs -f paperclip
+
+services:
+  hermes:
+    image: hermes-paperclip:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hermes
+    restart: unless-stopped
+    # Inherit Hermes' default ENTRYPOINT (/opt/hermes/docker/entrypoint.sh).
+    # `gateway run` exposes the OpenAI-compatible API + health endpoint on 8642.
+    command: ["gateway", "run"]
+    environment:
+      HERMES_HOME: /opt/data
+      # Map the in-container `hermes` user to the host user so files written
+      # to ./data/hermes are owned by you, not UID 10000. Override if needed.
+      HERMES_UID: ${HERMES_UID:-1000}
+      HERMES_GID: ${HERMES_GID:-1000}
+    volumes:
+      - ./data/hermes:/opt/data
+    ports:
+      - "8642:8642"   # gateway / OpenAI-compatible API
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8642/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  hermes-dashboard:
+    image: hermes-paperclip:latest
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    command: ["dashboard"]
+    environment:
+      HERMES_HOME: /opt/data
+      HERMES_UID: ${HERMES_UID:-1000}
+      HERMES_GID: ${HERMES_GID:-1000}
+      # Dashboard talks to the gateway over the compose network.
+      GATEWAY_HEALTH_URL: http://hermes:8642
+    volumes:
+      - ./data/hermes:/opt/data
+    ports:
+      - "9119:9119"   # web dashboard
+    depends_on:
+      hermes:
+        condition: service_started
+
+  paperclip:
+    image: hermes-paperclip:latest
+    container_name: paperclip
+    restart: unless-stopped
+    # Override Hermes' entrypoint to launch the Paperclip CLI instead.
+    entrypoint: ["paperclipai"]
+    command: ["run"]
+    # Paperclip's embedded Postgres refuses to run as root, so drop to the
+    # `node` user that the Node.js install already created (UID 1000).
+    user: "1000:1000"
+    environment:
+      HOME: /data
+      PAPERCLIP_HOME: /data
+      HOST: "0.0.0.0"
+      # Telemetry off by default; remove if you want to opt in.
+      PAPERCLIP_TELEMETRY_DISABLED: "1"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - ./data/paperclip:/data
+    ports:
+      - "3100:3100"   # Paperclip API + UI
