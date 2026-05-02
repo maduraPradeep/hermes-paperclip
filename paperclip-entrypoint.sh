@@ -40,7 +40,12 @@ chown -R "${PAPERCLIP_UID}:${PAPERCLIP_GID}" /data
 #      subdir; Hermes finds no .env there and proceeds cleanly.
 HERMES_STATE_DIR=/data/.hermes-state
 mkdir -p "$HERMES_STATE_DIR"
-chown "${PAPERCLIP_UID}:${PAPERCLIP_GID}" "$HERMES_STATE_DIR"
+# Recursive chown — `docker compose exec paperclip hermes ...` runs as root by
+# default and creates subdirs owned by root; subsequent runs as UID 1000 then
+# fail with PermissionError on those subdirs (e.g. .hermes-state/logs/curator).
+# Setgid bit on the top dir keeps the GID consistent for new files.
+chown -R "${PAPERCLIP_UID}:${PAPERCLIP_GID}" "$HERMES_STATE_DIR"
+chmod g+s "$HERMES_STATE_DIR"
 
 # If a config already exists, force bind=lan / host=0.0.0.0 so paperclipai is
 # reachable from other containers on the compose network (nginx upstream).
