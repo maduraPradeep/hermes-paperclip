@@ -30,6 +30,18 @@ fi
 
 chown -R "${PAPERCLIP_UID}:${PAPERCLIP_GID}" /data
 
+# Paperclip probes `hermes --version` to detect the bundled agent. Two things
+# are needed for that to succeed when paperclipai runs as UID 1000:
+#   1. /opt/hermes/.venv/bin must be on PATH (the Hermes entrypoint adds it,
+#      but we bypass the Hermes entrypoint).
+#   2. HERMES_HOME must point at a dir UID 1000 can stat — the default
+#      /opt/data is owned by UID 10000 / 0700, so loading $HERMES_HOME/.env
+#      raises PermissionError before --version prints. Use a paperclip-owned
+#      subdir; Hermes finds no .env there and proceeds cleanly.
+HERMES_STATE_DIR=/data/.hermes-state
+mkdir -p "$HERMES_STATE_DIR"
+chown "${PAPERCLIP_UID}:${PAPERCLIP_GID}" "$HERMES_STATE_DIR"
+
 # If a config already exists, force bind=lan / host=0.0.0.0 so paperclipai is
 # reachable from other containers on the compose network (nginx upstream).
 # This is idempotent — only the four server.* fields below are touched, so
@@ -75,4 +87,6 @@ exec setpriv \
     --reuid="${PAPERCLIP_UID}" --regid="${PAPERCLIP_GID}" --clear-groups \
     env HOME=/data PAPERCLIP_HOME=/data HOST=0.0.0.0 \
         PAPERCLIP_TELEMETRY_DISABLED=1 DO_NOT_TRACK=1 \
+        HERMES_HOME="$HERMES_STATE_DIR" \
+        PATH="/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     paperclipai "$@"

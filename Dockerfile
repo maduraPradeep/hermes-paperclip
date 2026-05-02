@@ -80,6 +80,14 @@ RUN set -eux; \
     chmod -R a+rX /usr/lib/node_modules /usr/bin/node /usr/bin/npm /usr/bin/npx; \
     [ -d "$PNPM_HOME" ] && chmod -R a+rX "$PNPM_HOME" || true
 
+# Symlink the hermes CLI into /usr/local/bin so it resolves on the default
+# PATH for any user — Hermes' own entrypoint normally adds /opt/hermes/.venv/bin
+# to PATH, but processes that bypass that entrypoint (paperclip, direct
+# `docker exec`) wouldn't find it otherwise. Paperclip's version probe
+# (`hermes --version`) needs this.
+RUN ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
+    && /usr/local/bin/hermes --version 2>&1 | head -1
+
 # Paperclip's API server defaults to :3100; Hermes uses 8642 (gateway)
 # and 9119 (dashboard). Document them all.
 EXPOSE 3100 8642 9119
