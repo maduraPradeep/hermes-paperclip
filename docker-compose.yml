@@ -66,19 +66,27 @@ services:
     image: hermes-paperclip:latest
     container_name: paperclip
     restart: unless-stopped
-    # Override Hermes' entrypoint to launch the Paperclip CLI instead.
-    entrypoint: ["paperclipai"]
-    command: ["run"]
-    # Paperclip's embedded Postgres refuses to run as root, so drop to the
-    # `node` user that the Node.js install already created (UID 1000).
-    user: "1000:1000"
+    # Override Hermes' entrypoint with a tiny shell wrapper that fixes
+    # ownership of the bind-mounted /data dir (Docker creates host dirs
+    # as root, but Paperclip runs as UID 1000 and cannot mkdir there),
+    # then drops to the paperclip user and execs `paperclipai run`.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        : "$${PAPERCLIP_UID:=1000}"
+        : "$${PAPERCLIP_GID:=1000}"
+        chown -R "$${PAPERCLIP_UID}:$${PAPERCLIP_GID}" /data
+        exec setpriv \
+          --reuid="$${PAPERCLIP_UID}" --regid="$${PAPERCLIP_GID}" --clear-groups \
+          env HOME=/data PAPERCLIP_HOME=/data HOST=0.0.0.0 \
+              PAPERCLIP_TELEMETRY_DISABLED=1 DO_NOT_TRACK=1 \
+          paperclipai run
+    # Wrapper needs root briefly to chown; it then drops to UID/GID 1000
+    # via setpriv (Paperclip's embedded Postgres refuses root).
     environment:
-      HOME: /data
-      PAPERCLIP_HOME: /data
-      HOST: "0.0.0.0"
-      # Telemetry off by default; remove if you want to opt in.
-      PAPERCLIP_TELEMETRY_DISABLED: "1"
-      DO_NOT_TRACK: "1"
+      PAPERCLIP_UID: ${PAPERCLIP_UID:-1000}
+      PAPERCLIP_GID: ${PAPERCLIP_GID:-1000}
     volumes:
       - ./data/paperclip:/data
     expose:
