@@ -51,18 +51,23 @@ services:
     image: hermes-paperclip:latest
     container_name: hermes-dashboard
     restart: unless-stopped
-    command: ["dashboard"]
+    # Force the dashboard to bind on all interfaces. By default Hermes' web
+    # UI binds to 127.0.0.1 only ("Hermes Web UI → http://127.0.0.1:9119"
+    # in the logs), so nginx on the compose network gets connection-refused.
+    # `--insecure` is required for any non-loopback bind — Hermes warns it
+    # "exposes API keys on the network". That's safe in this topology only
+    # because port 9119 is `expose:`-only (no host port) so nothing outside
+    # the compose network can reach it; nginx is the sole upstream.
+    # FOR PRODUCTION: add HTTP basic auth at the nginx layer (auth_basic
+    # in nginx/conf.d/hermes.conf.template) so dashboard isn't open to
+    # anyone who can resolve the public domain.
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
     environment:
       HERMES_HOME: /opt/data
       HERMES_UID: ${HERMES_UID:-1000}
       HERMES_GID: ${HERMES_GID:-1000}
       # Dashboard talks to the gateway over the compose network.
       GATEWAY_HEALTH_URL: http://hermes:8642
-      # Force the dashboard to bind on all interfaces — by default it only
-      # listens on 127.0.0.1 inside the container, which means nginx (on the
-      # compose network) gets "connection refused".
-      HERMES_DASHBOARD_HOST: "0.0.0.0"
-      HERMES_DASHBOARD_PORT: "9119"
     volumes:
       - ./data/hermes:/opt/data
     # No host port — exposed only inside the compose network and proxied by nginx.
