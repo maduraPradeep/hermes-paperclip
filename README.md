@@ -12,7 +12,14 @@ A single Docker image that bundles **[Hermes Agent](https://hermes-agent.nousres
 | File | Purpose |
 |---|---|
 | `Dockerfile` | Builds the combined image |
-| `docker-compose.yml` | Runs Hermes gateway + dashboard + Paperclip side-by-side |
+| `docker-compose.yml` | Runs Hermes gateway + dashboard + Paperclip + nginx + certbot |
+| `nginx/nginx.conf` | Top-level nginx config (TLS defaults, gzip, WebSocket map) |
+| `nginx/conf.d/00-acme.conf` | Port 80: serves ACME challenge, 301s everything else to HTTPS |
+| `nginx/conf.d/hermes.conf.template` | HTTPS reverse proxy → `hermes-dashboard:9119` |
+| `nginx/conf.d/paperclip.conf.template` | HTTPS reverse proxy → `paperclip:3100` |
+| `nginx/docker-entrypoint.sh` | Renders templates and bootstraps in HTTP-only mode if certs are missing |
+| `init-letsencrypt.sh` | One-shot script to provision Let's Encrypt certs for both domains |
+| `.env.example` | Template for `HERMES_DOMAIN`, `PAPERCLIP_DOMAIN`, `LE_EMAIL` |
 | `README.md` | This file |
 
 ## Build
@@ -92,31 +99,76 @@ docker run -d --name paperclip --restart unless-stopped \
 
 ## Run with docker compose
 
-The bundled `docker-compose.yml` wires up three containers (`hermes`, `hermes-dashboard`, `paperclip`) sharing the same image but with isolated data volumes under `./data/`.
+The bundled `docker-compose.yml` wires up five containers sharing one image:
+
+| Container | Bound on host | Purpose |
+|---|---|---|
+| `hermes` | `:8642` | Hermes gateway (OpenAI-compatible) — direct host access for local SDKs |
+| `hermes-dashboard` | _internal only_ | Hermes web UI, fronted by nginx |
+| `paperclip` | _internal only_ | Paperclip API + UI, fronted by nginx |
+| `nginx` | `:80`, `:443` | TLS termination + reverse proxy |
+| `certbot` | — | Renews Let's Encrypt certs every 12h |
+
+### One-time bootstrap with HTTPS (Let's Encrypt)
+
+1. Point DNS for both subdomains at this host:
+   ```
+   hermes.example.com    A   <your-ip>
+   paperclip.example.com A   <your-ip>
+   ```
+
+2. Configure environment:
+   ```bash
+   cp .env.example .env
+   $EDITOR .env   # set HERMES_DOMAIN, PAPERCLIP_DOMAIN, LE_EMAIL
+   ```
+
+3. Initialize Hermes + Paperclip data dirs (interactive):
+   ```bash
+   docker compose run --rm hermes setup
+   docker compose run --rm paperclip onboard --yes
+   ```
+
+4. Bring everything up. nginx starts in **HTTP-only bootstrap mode** because no certs exist yet — it serves only the ACME challenge path on `:80`:
+   ```bash
+   docker compose up -d
+   ```
+
+5. Provision real certs and switch nginx into HTTPS mode:
+   ```bash
+   ./init-letsencrypt.sh
+   ```
+   While iterating on DNS/firewall, set `LE_STAGING=1` in `.env` to use Let's Encrypt's staging environment (untrusted certs, no rate limits), then re-run.
+
+6. Tell Paperclip its public hostname is allowed (only needed for Paperclip — Hermes doesn't gate by Host):
+   ```bash
+   docker compose exec paperclip paperclipai allowed-hostname "$PAPERCLIP_DOMAIN"
+   ```
+
+You're live:
+
+| Service | URL |
+|---|---|
+| Paperclip | `https://paperclip.example.com` |
+| Hermes dashboard | `https://hermes.example.com` |
+| Hermes gateway (OpenAI-compatible) | `http://<host>:8642` (kept on plain HTTP for local SDK use; front it with nginx if you want it public) |
+
+### Day-to-day
 
 ```bash
-cd docker/hermes-paperclip
-
-# One-time setup (interactive)
-docker compose run --rm hermes setup
-docker compose run --rm paperclip onboard --yes
-
-# Start everything
-docker compose up -d
-
-# Tail logs
-docker compose logs -f hermes
-docker compose logs -f paperclip
-docker compose logs -f hermes-dashboard
+docker compose up -d             # start
+docker compose down              # stop, keep data
+docker compose logs -f nginx     # tail any service
+docker compose pull && docker compose up -d   # update images
 ```
 
-Then open:
+### Cert renewal
 
-| Service | URL | Notes |
-|---|---|---|
-| Paperclip | http://localhost:3100 | API + UI |
-| Hermes gateway | http://localhost:8642 | OpenAI-compatible |
-| Hermes dashboard | http://localhost:9119 | Web UI |
+The `certbot` service runs `certbot renew` every 12h in the background. You don't need a host cron job. Force a renewal with:
+```bash
+docker compose exec certbot certbot renew --force-renewal
+docker compose exec nginx nginx -s reload
+```
 
 ### Environment variables (compose)
 
@@ -168,6 +220,12 @@ Both directories are stateless from the image's perspective — you can `docker 
 **Files written by Hermes are owned by UID 10000 on the host.** Set `HERMES_UID` / `HERMES_GID` to your host user — Hermes' entrypoint runs `usermod`/`groupmod` then drops privileges via `gosu`.
 
 **Image is ~9 GB.** The Hermes base alone is 8.15 GB (Playwright browsers, Python `.venv`, ffmpeg, ripgrep, `docker-cli`, etc.). To slim, fork the Hermes Dockerfile rather than overlaying it.
+
+**`init-letsencrypt.sh` fails with "Connection refused" or "NXDOMAIN".** Let's Encrypt validates from the public internet — DNS for both `HERMES_DOMAIN` and `PAPERCLIP_DOMAIN` must resolve to this host's public IP, and ports 80/443 must be open. Test from outside: `curl -v http://hermes.example.com/.well-known/acme-challenge/_probe` should return 404 from nginx (not connection-refused).
+
+**`init-letsencrypt.sh` hits Let's Encrypt rate limits.** You get 5 cert requests per domain per week. Set `LE_STAGING=1` in `.env` while iterating, then flip back to `0` and re-run for the real cert.
+
+**Paperclip returns "host not allowed" after switching to a custom domain.** Run `docker compose exec paperclip paperclipai allowed-hostname <your-domain>` once.
 
 ## References
 

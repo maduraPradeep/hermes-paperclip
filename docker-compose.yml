@@ -55,8 +55,9 @@ services:
       GATEWAY_HEALTH_URL: http://hermes:8642
     volumes:
       - ./data/hermes:/opt/data
-    ports:
-      - "9119:9119"   # web dashboard
+    # No host port — exposed only inside the compose network and proxied by nginx.
+    expose:
+      - "9119"
     depends_on:
       hermes:
         condition: service_started
@@ -80,5 +81,57 @@ services:
       DO_NOT_TRACK: "1"
     volumes:
       - ./data/paperclip:/data
+    expose:
+      - "3100"
+
+  # ---------------------------------------------------------------------------
+  # nginx + certbot — public TLS termination for the Hermes dashboard and
+  # Paperclip. Both apps stay private inside the compose network; only nginx
+  # binds to the host's :80 and :443.
+  #
+  # First-time bootstrap (after DNS for both domains points at this host):
+  #   cp .env.example .env  &&  $EDITOR .env   # set HERMES_DOMAIN, PAPERCLIP_DOMAIN, LE_EMAIL
+  #   docker compose up -d                     # nginx starts in HTTP-only bootstrap mode
+  #   ./init-letsencrypt.sh                    # provisions certs + restarts nginx
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: nginx
+    restart: unless-stopped
+    environment:
+      HERMES_DOMAIN: ${HERMES_DOMAIN:?set HERMES_DOMAIN in .env}
+      PAPERCLIP_DOMAIN: ${PAPERCLIP_DOMAIN:?set PAPERCLIP_DOMAIN in .env}
     ports:
-      - "3100:3100"   # Paperclip API + UI
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:rw
+      - ./nginx/docker-entrypoint.sh:/docker-entrypoint.d/40-render-templates.sh:ro
+      - ./data/letsencrypt:/etc/letsencrypt:ro
+      - ./data/certbot-www:/var/www/certbot:ro
+    # Use the bundled entrypoint to render templates and bootstrap-or-serve.
+    entrypoint: ["/docker-entrypoint.d/40-render-templates.sh"]
+    depends_on:
+      - hermes-dashboard
+      - paperclip
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: certbot
+    # Renews any existing certs every 12h. Initial issuance is done via
+    # ./init-letsencrypt.sh (one-shot `docker compose run --rm certbot`).
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        trap exit TERM
+        while :; do
+          certbot renew --webroot -w /var/www/certbot --quiet
+          sleep 12h & wait $${!}
+        done
+    volumes:
+      - ./data/letsencrypt:/etc/letsencrypt:rw
+      - ./data/certbot-www:/var/www/certbot:rw
+    depends_on:
+      - nginx
