@@ -101,6 +101,14 @@ services:
       # `paperclip` (compose service name) and `localhost` are always added.
       # Defaults to PAPERCLIP_DOMAIN so the public domain works automatically.
       PAPERCLIP_ALLOWED_HOSTS: ${PAPERCLIP_ALLOWED_HOSTS:-${PAPERCLIP_DOMAIN:-}}
+      # Service-level so `docker compose exec paperclip ...` (which bypasses
+      # the entrypoint) finds the right config dir. paperclipai resolves
+      # config to $PAPERCLIP_HOME/instances/$INSTANCE/config.json (else $HOME).
+      HOME: /data
+      PAPERCLIP_HOME: /data
+      HOST: "0.0.0.0"
+      PAPERCLIP_TELEMETRY_DISABLED: "1"
+      DO_NOT_TRACK: "1"
     volumes:
       - ./paperclip-entrypoint.sh:/usr/local/bin/paperclip-entrypoint.sh:ro
       - ./data/paperclip:/data
