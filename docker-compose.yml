@@ -31,6 +31,11 @@ services:
       # to ./data/hermes are owned by you, not UID 10000. Override if needed.
       HERMES_UID: ${HERMES_UID:-1000}
       HERMES_GID: ${HERMES_GID:-1000}
+      # Force the gateway to bind on all interfaces — without this it
+      # listens on 127.0.0.1 only, so neither nginx nor hermes-dashboard
+      # (both on the compose network) can reach it.
+      HERMES_GATEWAY_HOST: "0.0.0.0"
+      HERMES_GATEWAY_PORT: "8642"
     volumes:
       - ./data/hermes:/opt/data
     ports:
@@ -53,6 +58,11 @@ services:
       HERMES_GID: ${HERMES_GID:-1000}
       # Dashboard talks to the gateway over the compose network.
       GATEWAY_HEALTH_URL: http://hermes:8642
+      # Force the dashboard to bind on all interfaces — by default it only
+      # listens on 127.0.0.1 inside the container, which means nginx (on the
+      # compose network) gets "connection refused".
+      HERMES_DASHBOARD_HOST: "0.0.0.0"
+      HERMES_DASHBOARD_PORT: "9119"
     volumes:
       - ./data/hermes:/opt/data
     # No host port — exposed only inside the compose network and proxied by nginx.
@@ -66,17 +76,31 @@ services:
     image: hermes-paperclip:latest
     container_name: paperclip
     restart: unless-stopped
-    # paperclip-entrypoint.sh starts as root just long enough to fix the
-    # ownership of the bind-mounted /data dir (Docker creates host dirs
-    # as root, but Paperclip's embedded Postgres refuses root), then drops
-    # to PAPERCLIP_UID/GID via setpriv and execs `paperclipai "$@"`.
-    # Default command is `run`; override per-invocation, e.g.:
+    # paperclip-entrypoint.sh starts as root just long enough to:
+    #   - fix /data ownership (Docker creates bind mounts as root, but
+    #     Paperclip's embedded Postgres refuses root)
+    #   - register PAPERCLIP_UID/GID in /etc/passwd|/etc/group (libuv crashes
+    #     with uv_os_get_passwd ENOENT otherwise)
+    #   - patch config.json to force server.bind=lan / host=0.0.0.0 /
+    #     deploymentMode=authenticated and merge PAPERCLIP_ALLOWED_HOSTS
+    #     into server.allowedHostnames — so the running container is always
+    #     reachable from the nginx upstream regardless of how `onboard` was run
+    # then drops to PAPERCLIP_UID/GID via setpriv and execs `paperclipai "$@"`.
+    #
+    # `--bind lan` only matters on FIRST run (no config yet); on subsequent
+    # runs the in-place patcher above keeps the config correct. Override the
+    # command per-invocation for one-offs:
     #   docker compose run --rm paperclip onboard --yes
+    #   docker compose run --rm paperclip allowed-hostname some.other.host
     entrypoint: ["/usr/local/bin/paperclip-entrypoint.sh"]
-    command: ["run"]
+    command: ["run", "--bind", "lan"]
     environment:
       PAPERCLIP_UID: ${PAPERCLIP_UID:-1000}
       PAPERCLIP_GID: ${PAPERCLIP_GID:-1000}
+      # Comma-separated list of hostnames merged into server.allowedHostnames.
+      # `paperclip` (compose service name) and `localhost` are always added.
+      # Defaults to PAPERCLIP_DOMAIN so the public domain works automatically.
+      PAPERCLIP_ALLOWED_HOSTS: ${PAPERCLIP_ALLOWED_HOSTS:-${PAPERCLIP_DOMAIN:-}}
     volumes:
       - ./paperclip-entrypoint.sh:/usr/local/bin/paperclip-entrypoint.sh:ro
       - ./data/paperclip:/data

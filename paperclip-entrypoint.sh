@@ -30,9 +30,45 @@ fi
 
 chown -R "${PAPERCLIP_UID}:${PAPERCLIP_GID}" /data
 
-# Default to `run` if no command was given.
+# If a config already exists, force bind=lan / host=0.0.0.0 so paperclipai is
+# reachable from other containers on the compose network (nginx upstream).
+# This is idempotent — only the four server.* fields below are touched, so
+# anything else you've configured (LLM keys, secrets, storage paths) is
+# preserved. Skipped on first-run; in that case `run --bind lan` does it.
+CONFIG_FILE="/data/instances/default/config.json"
+if [ -f "$CONFIG_FILE" ]; then
+    CONFIG_FILE="$CONFIG_FILE" PAPERCLIP_ALLOWED_HOSTS="${PAPERCLIP_ALLOWED_HOSTS:-}" \
+    /usr/bin/node -e '
+        const fs = require("fs");
+        const file = process.env.CONFIG_FILE;
+        const extra = (process.env.PAPERCLIP_ALLOWED_HOSTS || "")
+            .split(",").map(s => s.trim()).filter(Boolean);
+        const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+        cfg.server = cfg.server || {};
+        const before = JSON.stringify(cfg.server);
+        cfg.server.bind = "lan";
+        cfg.server.host = "0.0.0.0";
+        cfg.server.deploymentMode = "authenticated";
+        const set = new Set([
+            ...(cfg.server.allowedHostnames || []),
+            "paperclip", "localhost", ...extra,
+        ]);
+        cfg.server.allowedHostnames = [...set].filter(s => s && s.length > 0);
+        if (JSON.stringify(cfg.server) !== before) {
+            fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\n");
+            console.log("[paperclip-entrypoint] server config patched: bind=lan host=0.0.0.0 hosts=" + cfg.server.allowedHostnames.join(","));
+        } else {
+            console.log("[paperclip-entrypoint] server config already correct");
+        }
+    ' || echo "[paperclip-entrypoint] WARN: could not patch $CONFIG_FILE — continuing"
+    chown "${PAPERCLIP_UID}:${PAPERCLIP_GID}" "$CONFIG_FILE"
+fi
+
+# Default to `run --bind lan` if no command was given.
+# `--bind lan` only affects FIRST-run onboarding; on subsequent runs the
+# patcher above keeps the config in sync.
 if [ "$#" -eq 0 ]; then
-    set -- run
+    set -- run --bind lan
 fi
 
 exec setpriv \
