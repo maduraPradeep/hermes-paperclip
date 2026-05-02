@@ -30,22 +30,25 @@ fi
 
 chown -R "${PAPERCLIP_UID}:${PAPERCLIP_GID}" /data
 
-# Paperclip probes `hermes --version` to detect the bundled agent. Two things
-# are needed for that to succeed when paperclipai runs as UID 1000:
-#   1. /opt/hermes/.venv/bin must be on PATH (the Hermes entrypoint adds it,
-#      but we bypass the Hermes entrypoint).
-#   2. HERMES_HOME must point at a dir UID 1000 can stat — the default
-#      /opt/data is owned by UID 10000 / 0700, so loading $HERMES_HOME/.env
-#      raises PermissionError before --version prints. Use a paperclip-owned
-#      subdir; Hermes finds no .env there and proceeds cleanly.
-HERMES_STATE_DIR=/data/.hermes-state
-mkdir -p "$HERMES_STATE_DIR"
-# Recursive chown — `docker compose exec paperclip hermes ...` runs as root by
-# default and creates subdirs owned by root; subsequent runs as UID 1000 then
-# fail with PermissionError on those subdirs (e.g. .hermes-state/logs/curator).
-# Setgid bit on the top dir keeps the GID consistent for new files.
-chown -R "${PAPERCLIP_UID}:${PAPERCLIP_GID}" "$HERMES_STATE_DIR"
-chmod g+s "$HERMES_STATE_DIR"
+# We share /opt/data with the `hermes` service so `hermes setup` config is
+# visible from inside paperclip (HERMES_HOME=/opt/data in compose). For that
+# to work, paperclip must be able to read/write /opt/data — i.e. its UID must
+# match HERMES_UID. The hermes service also remaps to HERMES_UID at startup,
+# so when both default to 1000 ownership lines up automatically.
+#
+# Also fix any root-owned subdirs left by accidental `docker compose exec`
+# invocations (`exec` defaults to root). Quietly skip if /opt/data isn't a
+# bind mount yet (first run before the hermes service has initialised it).
+if [ -d /opt/data ] && [ -w /opt/data ]; then
+    # Don't recursively chown — that would clobber HERMES_UID files if the
+    # user deliberately set HERMES_UID != PAPERCLIP_UID. Only fix the
+    # well-known subdirs hermes' Python writes from paperclipai's probe.
+    for d in /opt/data/logs /opt/data/logs/curator; do
+        if [ -e "$d" ] && [ ! -w "$d" ]; then
+            chown -R "${PAPERCLIP_UID}:${PAPERCLIP_GID}" "$d" 2>/dev/null || true
+        fi
+    done
+fi
 
 # If a config already exists, force bind=lan / host=0.0.0.0 so paperclipai is
 # reachable from other containers on the compose network (nginx upstream).
@@ -92,6 +95,6 @@ exec setpriv \
     --reuid="${PAPERCLIP_UID}" --regid="${PAPERCLIP_GID}" --clear-groups \
     env HOME=/data PAPERCLIP_HOME=/data HOST=0.0.0.0 \
         PAPERCLIP_TELEMETRY_DISABLED=1 DO_NOT_TRACK=1 \
-        HERMES_HOME="$HERMES_STATE_DIR" \
+        HERMES_HOME=/opt/data \
         PATH="/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     paperclipai "$@"

@@ -109,16 +109,21 @@ services:
       HOST: "0.0.0.0"
       PAPERCLIP_TELEMETRY_DISABLED: "1"
       DO_NOT_TRACK: "1"
-      # Point Hermes at a paperclip-owned dir; the default /opt/data is
-      # owned by UID 10000 (hermes), so paperclipai (UID 1000) cannot stat
-      # $HERMES_HOME/.env and `hermes --version` warnings appear.
-      HERMES_HOME: /data/.hermes-state
+      # Share Hermes' configured home with the `hermes` service so paperclipai's
+      # `hermes` invocations see the API keys / config from `hermes setup`.
+      # ASSUMES `HERMES_UID == PAPERCLIP_UID` (both default to 1000 in
+      # .env.example) so file ownership lines up; if you change one, change
+      # the other too.
+      HERMES_HOME: /opt/data
       # Add Hermes' venv to PATH so `hermes` resolves for paperclipai's
       # version check and for `docker compose exec paperclip hermes ...`.
       PATH: /opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     volumes:
       - ./paperclip-entrypoint.sh:/usr/local/bin/paperclip-entrypoint.sh:ro
       - ./data/paperclip:/data
+      # Same bind mount as the `hermes` service — so `hermes setup` config
+      # written by either container is visible to both.
+      - ./data/hermes:/opt/data
     expose:
       - "3100"
 
