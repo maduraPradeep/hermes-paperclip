@@ -1,18 +1,17 @@
-# Runs Hermes Agent + Paperclip side-by-side from the same combined image.
+# Runs Hermes Agent + Paperclip + Hermes Workspace side-by-side.
 #
-# Both services share the same image (hermes-paperclip:latest) but use
-# different entrypoints/commands and isolated data volumes.
-#
-# First-time setup:
-#   docker compose run --rm hermes setup        # Hermes API keys wizard
-#   docker compose run --rm paperclip onboard --yes   # Paperclip first-run
-#
-# Then:
+# LOCAL TESTING (no DNS or TLS needed):
+#   docker compose run --rm hermes setup          # Hermes API keys wizard
+#   docker compose run --rm paperclip onboard --yes
 #   docker compose up -d
+#   # Services available at:
+#   #   http://localhost:8642  — Hermes gateway (OpenAI-compatible API)
+#   #   http://localhost:9119  — Hermes dashboard
+#   #   http://localhost:3000  — Hermes Workspace
+#   #   http://localhost:3100  — Paperclip
 #
-# Logs:
-#   docker compose logs -f hermes
-#   docker compose logs -f paperclip
+# PRODUCTION (with TLS via nginx + Let's Encrypt):
+#   See docker-compose.nginx.yml
 
 services:
   hermes:
@@ -31,11 +30,17 @@ services:
       # to ./data/hermes are owned by you, not UID 10000. Override if needed.
       HERMES_UID: ${HERMES_UID:-1000}
       HERMES_GID: ${HERMES_GID:-1000}
-      # Force the gateway to bind on all interfaces — without this it
-      # listens on 127.0.0.1 only, so neither nginx nor hermes-dashboard
-      # (both on the compose network) can reach it.
-      HERMES_GATEWAY_HOST: "0.0.0.0"
-      HERMES_GATEWAY_PORT: "8642"
+      # Enable the OpenAI-compatible API server platform and bind it on all
+      # interfaces so nginx and hermes-workspace (on the compose network)
+      # can reach it. Without API_SERVER_ENABLED the gateway starts but
+      # never opens port 8642; without HOST=0.0.0.0 it only listens on
+      # 127.0.0.1 inside the container and is unreachable from other services.
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_PORT: "8642"
+      # Required to bind on 0.0.0.0 — reuses HERMES_API_TOKEN so the same
+      # value works in both hermes (API_SERVER_KEY) and hermes-workspace.
+      API_SERVER_KEY: ${HERMES_API_TOKEN:?set HERMES_API_TOKEN in .env}
     volumes:
       - ./data/hermes:/opt/data
     ports:
@@ -51,28 +56,23 @@ services:
     image: hermes-paperclip:latest
     container_name: hermes-dashboard
     restart: unless-stopped
-    # Force the dashboard to bind on all interfaces. By default Hermes' web
-    # UI binds to 127.0.0.1 only ("Hermes Web UI → http://127.0.0.1:9119"
-    # in the logs), so nginx on the compose network gets connection-refused.
     # `--insecure` is required for any non-loopback bind — Hermes warns it
-    # "exposes API keys on the network". That's safe in this topology only
-    # because port 9119 is `expose:`-only (no host port) so nothing outside
-    # the compose network can reach it; nginx is the sole upstream.
+    # "exposes API keys on the network". In production this is safe because
+    # docker-compose.nginx.yml is the sole upstream; locally you are on your
+    # own machine so it is equally safe.
     # FOR PRODUCTION: add HTTP basic auth at the nginx layer (auth_basic
-    # in nginx/conf.d/hermes.conf.template) so dashboard isn't open to
+    # in nginx/conf.d/hermes.conf.template) so the dashboard isn't open to
     # anyone who can resolve the public domain.
     command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
     environment:
       HERMES_HOME: /opt/data
       HERMES_UID: ${HERMES_UID:-1000}
       HERMES_GID: ${HERMES_GID:-1000}
-      # Dashboard talks to the gateway over the compose network.
       GATEWAY_HEALTH_URL: http://hermes:8642
     volumes:
       - ./data/hermes:/opt/data
-    # No host port — exposed only inside the compose network and proxied by nginx.
-    expose:
-      - "9119"
+    ports:
+      - "9119:9119"   # Hermes dashboard
     depends_on:
       hermes:
         condition: service_started
@@ -129,57 +129,30 @@ services:
       # Same bind mount as the `hermes` service — so `hermes setup` config
       # written by either container is visible to both.
       - ./data/hermes:/opt/data
-    expose:
-      - "3100"
+    ports:
+      - "3100:3100"   # Paperclip
 
-  # ---------------------------------------------------------------------------
-  # nginx + certbot — public TLS termination for the Hermes dashboard and
-  # Paperclip. Both apps stay private inside the compose network; only nginx
-  # binds to the host's :80 and :443.
-  #
-  # First-time bootstrap (after DNS for both domains points at this host):
-  #   cp .env.example .env  &&  $EDITOR .env   # set HERMES_DOMAIN, PAPERCLIP_DOMAIN, LE_EMAIL
-  #   docker compose up -d                     # nginx starts in HTTP-only bootstrap mode
-  #   ./init-letsencrypt.sh                    # provisions certs + restarts nginx
-  # ---------------------------------------------------------------------------
-  nginx:
-    image: nginx:1.27-alpine
-    container_name: nginx
+  hermes-workspace:
+    image: ghcr.io/outsourc-e/hermes-workspace:latest
+    container_name: hermes-workspace
     restart: unless-stopped
     environment:
-      HERMES_DOMAIN: ${HERMES_DOMAIN:?set HERMES_DOMAIN in .env}
-      PAPERCLIP_DOMAIN: ${PAPERCLIP_DOMAIN:?set PAPERCLIP_DOMAIN in .env}
+      # Point the workspace UI at the Hermes gateway on the compose network.
+      HERMES_API_URL: http://hermes:8642
+      # Must match API_SERVER_KEY on the hermes service if you set one; leave
+      # blank if the gateway runs without auth (the default in this stack).
+      HERMES_API_TOKEN: ${HERMES_API_TOKEN:-}
+      # Optional locally; required in production (set in docker-compose.nginx.yml).
+      HERMES_PASSWORD: ${HERMES_PASSWORD:-}
+      # Disabled for local HTTP; docker-compose.nginx.yml overrides both to
+      # "true" when the workspace is behind nginx TLS.
+      COOKIE_SECURE: "false"
+      TRUST_PROXY: "false"
+      # Bypass the non-loopback+no-password guard for local development.
+      # docker-compose.nginx.yml removes this by requiring HERMES_PASSWORD instead.
+      HERMES_ALLOW_INSECURE_REMOTE: "1"
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/conf.d:/etc/nginx/conf.d:rw
-      - ./nginx/docker-entrypoint.sh:/docker-entrypoint.d/40-render-templates.sh:ro
-      - ./data/letsencrypt:/etc/letsencrypt:ro
-      - ./data/certbot-www:/var/www/certbot:ro
-    # Use the bundled entrypoint to render templates and bootstrap-or-serve.
-    entrypoint: ["/docker-entrypoint.d/40-render-templates.sh"]
+      - "3000:3000"   # Hermes Workspace UI
     depends_on:
-      - hermes-dashboard
-      - paperclip
-
-  certbot:
-    image: certbot/certbot:latest
-    container_name: certbot
-    # Renews any existing certs every 12h. Initial issuance is done via
-    # ./init-letsencrypt.sh (one-shot `docker compose run --rm certbot`).
-    entrypoint: /bin/sh
-    command:
-      - -c
-      - |
-        trap exit TERM
-        while :; do
-          certbot renew --webroot -w /var/www/certbot --quiet
-          sleep 12h & wait $${!}
-        done
-    volumes:
-      - ./data/letsencrypt:/etc/letsencrypt:rw
-      - ./data/certbot-www:/var/www/certbot:rw
-    depends_on:
-      - nginx
+      hermes:
+        condition: service_healthy

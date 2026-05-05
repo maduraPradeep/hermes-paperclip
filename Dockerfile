@@ -88,6 +88,19 @@ RUN set -eux; \
 RUN ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
     && /usr/local/bin/hermes --version 2>&1 | head -1
 
+# Pre-build the hermes dashboard web UI at image-build time (as root).
+# The dashboard command always runs `npm install && npm run build` on startup;
+# this pre-populates node_modules and web_dist so the runtime build is fast.
+# We also make the entire web/ tree world-writable because the container
+# entrypoint remaps the hermes user from UID 10000 to the host UID, and
+# the remapped user can't write to directories owned by the original UID 10000.
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    set -eux; \
+    cd /opt/hermes/web; \
+    npm install --prefer-offline --no-audit; \
+    npm run build; \
+    chmod -R a+w /opt/hermes/web
+
 # Paperclip's API server defaults to :3100; Hermes uses 8642 (gateway)
 # and 9119 (dashboard). Document them all.
 EXPOSE 3100 8642 9119
