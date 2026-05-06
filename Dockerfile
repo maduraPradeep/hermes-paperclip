@@ -99,7 +99,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     cd /opt/hermes/web; \
     npm install --prefer-offline --no-audit; \
     npm run build; \
-    chmod -R a+w /opt/hermes/web
+    chmod -R a+w /opt/hermes/web /opt/hermes/hermes_cli/web_dist
 
 # Paperclip's API server defaults to :3100; Hermes uses 8642 (gateway)
 # and 9119 (dashboard). Document them all.
