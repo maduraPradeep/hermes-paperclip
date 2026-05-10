@@ -1,0 +1,66 @@
+# Production overlay — TLS termination via nginx + Let's Encrypt.
+#
+# Adds nginx and certbot, and tightens hermes-workspace for HTTPS deployment.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
+#
+# First-time bootstrap (after DNS for all three domains points at this host):
+#   cp .env.example .env
+#   $EDITOR .env   # set HERMES_DOMAIN, PAPERCLIP_DOMAIN, WORKSPACE_DOMAIN, LE_EMAIL, HERMES_PASSWORD
+#   docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
+#   ./init-letsencrypt.sh
+#   docker compose -f docker-compose.yml -f docker-compose.nginx.yml restart nginx
+#
+# Cert renewal is handled automatically by the certbot service every 12 h.
+
+services:
+  # Override workspace settings that need to change behind a TLS proxy.
+  hermes-workspace:
+    environment:
+      HERMES_PASSWORD: ${HERMES_PASSWORD:?set HERMES_PASSWORD in .env}
+      COOKIE_SECURE: "true"
+      TRUST_PROXY: "true"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: nginx
+    restart: unless-stopped
+    environment:
+      HERMES_DOMAIN: ${HERMES_DOMAIN:?set HERMES_DOMAIN in .env}
+      PAPERCLIP_DOMAIN: ${PAPERCLIP_DOMAIN:?set PAPERCLIP_DOMAIN in .env}
+      WORKSPACE_DOMAIN: ${WORKSPACE_DOMAIN:?set WORKSPACE_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:rw
+      - ./nginx/docker-entrypoint.sh:/docker-entrypoint.d/40-render-templates.sh:ro
+      - ./data/letsencrypt:/etc/letsencrypt:ro
+      - ./data/certbot-www:/var/www/certbot:ro
+    entrypoint: ["/docker-entrypoint.d/40-render-templates.sh"]
+    depends_on:
+      - hermes-dashboard
+      - paperclip
+      - hermes-workspace
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: certbot
+    # Renews any existing certs every 12 h. Initial issuance is done via
+    # ./init-letsencrypt.sh (one-shot `docker compose run --rm certbot`).
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        trap exit TERM
+        while :; do
+          certbot renew --webroot -w /var/www/certbot --quiet
+          sleep 12h & wait $${!}
+        done
+    volumes:
+      - ./data/letsencrypt:/etc/letsencrypt:rw
+      - ./data/certbot-www:/var/www/certbot:rw
+    depends_on:
+      - nginx

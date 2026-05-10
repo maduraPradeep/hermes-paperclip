@@ -18,6 +18,7 @@ cd "$(dirname "$0")"
 
 : "${HERMES_DOMAIN:?HERMES_DOMAIN missing — set in .env}"
 : "${PAPERCLIP_DOMAIN:?PAPERCLIP_DOMAIN missing — set in .env}"
+: "${WORKSPACE_DOMAIN:?WORKSPACE_DOMAIN missing — set in .env}"
 : "${LE_EMAIL:?LE_EMAIL missing — set in .env (used for cert expiry notices)}"
 
 # Set LE_STAGING=1 to use Let's Encrypt's staging environment for testing
@@ -30,7 +31,7 @@ fi
 
 # Verify nginx is up and serving the ACME path.
 echo "[init-le] verifying nginx ACME endpoint is reachable"
-for d in "$HERMES_DOMAIN" "$PAPERCLIP_DOMAIN"; do
+for d in "$HERMES_DOMAIN" "$PAPERCLIP_DOMAIN" "$WORKSPACE_DOMAIN"; do
     if ! curl -fsS -o /dev/null "http://${d}/.well-known/acme-challenge/_probe" \
             && [ "$?" -ne 22 ]; then  # 22 = HTTP 4xx, fine — means nginx answered
         echo "[init-le] WARNING: http://${d}/.well-known/acme-challenge/ not reachable."
@@ -38,10 +39,10 @@ for d in "$HERMES_DOMAIN" "$PAPERCLIP_DOMAIN"; do
     fi
 done
 
-for DOMAIN in "$HERMES_DOMAIN" "$PAPERCLIP_DOMAIN"; do
+for DOMAIN in "$HERMES_DOMAIN" "$PAPERCLIP_DOMAIN" "$WORKSPACE_DOMAIN"; do
     echo ""
     echo "[init-le] requesting cert for ${DOMAIN}"
-    docker compose run --rm --entrypoint "" certbot \
+    docker compose -f docker-compose.yml -f docker-compose.nginx.yml run --rm --entrypoint "" certbot \
         certbot certonly --webroot -w /var/www/certbot \
             --email "$LE_EMAIL" \
             --agree-tos --no-eff-email \
@@ -52,7 +53,8 @@ done
 
 echo ""
 echo "[init-le] done. Reloading nginx to pick up new certs..."
-docker compose restart nginx
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml restart nginx
 echo "[init-le] HTTPS should now be live:"
 echo "  https://${HERMES_DOMAIN}"
 echo "  https://${PAPERCLIP_DOMAIN}"
+echo "  https://${WORKSPACE_DOMAIN}"
