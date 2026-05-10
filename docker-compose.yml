@@ -41,6 +41,7 @@ services:
       # Required to bind on 0.0.0.0 — reuses HERMES_API_TOKEN so the same
       # value works in both hermes (API_SERVER_KEY) and hermes-workspace.
       API_SERVER_KEY: ${HERMES_API_TOKEN:?set HERMES_API_TOKEN in .env}
+      GATEWAY_ALLOW_ALL_USERS: "true"
     volumes:
       - ./data/hermes:/opt/data
     ports:
@@ -136,6 +137,7 @@ services:
     image: ghcr.io/outsourc-e/hermes-workspace:latest
     container_name: hermes-workspace
     restart: unless-stopped
+    user: "${HERMES_UID:-1000}:${HERMES_GID:-1000}"
     environment:
       # Point the workspace UI at the Hermes gateway on the compose network.
       HERMES_API_URL: http://hermes:8642
@@ -144,6 +146,8 @@ services:
       HERMES_API_TOKEN: ${HERMES_API_TOKEN:-}
       # Optional locally; required in production (set in docker-compose.nginx.yml).
       HERMES_PASSWORD: ${HERMES_PASSWORD:-}
+      # Point to the dashboard service for integrated links.
+      HERMES_DASHBOARD_URL: http://hermes-dashboard:9119
       # Disabled for local HTTP; docker-compose.nginx.yml overrides both to
       # "true" when the workspace is behind nginx TLS.
       COOKIE_SECURE: "false"
@@ -151,6 +155,8 @@ services:
       # Bypass the non-loopback+no-password guard for local development.
       # docker-compose.nginx.yml removes this by requiring HERMES_PASSWORD instead.
       HERMES_ALLOW_INSECURE_REMOTE: "1"
+    volumes:
+      - ./data/workspace:/home/workspace
     ports:
       - "3000:3000"   # Hermes Workspace UI
     depends_on:
