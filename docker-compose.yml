@@ -157,6 +157,8 @@ services:
       HERMES_ALLOW_INSECURE_REMOTE: "1"
     volumes:
       - ./data/workspace:/home/workspace
+    tmpfs:
+      - /app/.runtime
     ports:
       - "3000:3000"   # Hermes Workspace UI
     depends_on:
