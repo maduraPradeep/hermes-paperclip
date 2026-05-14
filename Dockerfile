@@ -1,9 +1,11 @@
-# Combined image: Hermes Agent (NousResearch) + Paperclip (paperclipai)
+# Combined image: Hermes Agent (NousResearch) + Paperclip (paperclipai) + gstack
 #
 # Starts from the official Hermes image, upgrades Node.js from Debian's
 # bundled 18.x to Node 22 (NodeSource), enables pnpm via corepack
-# (paperclipai requires pnpm >= 9.15), and globally installs the
-# paperclipai npm package so the `paperclipai` CLI is on PATH.
+# (paperclipai requires pnpm >= 9.15), globally installs the paperclipai npm
+# package, and pre-builds gstack (Garry Tan's Claude Code engineering toolkit)
+# at /opt/gstack so the companion gstack-init service in docker-compose.yml can
+# register all skills into the workspace volume at startup.
 #
 # Hermes' original ENTRYPOINT is preserved, so this image keeps full
 # Hermes behaviour (`docker run ... <image> setup|gateway run|dashboard|...`).
@@ -18,6 +20,7 @@ USER root
 
 ARG NODE_MAJOR=22
 ARG PAPERCLIP_VERSION=latest
+ARG GSTACK_REF=main
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PNPM_HOME=/usr/local/share/pnpm \
@@ -29,6 +32,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=180000 \
     NPM_CONFIG_FETCH_TIMEOUT=600000 \
     NPM_CONFIG_MAXSOCKETS=20
+# Global Playwright browser cache at a world-readable path so gstack's /qa and
+# /browse skills work for any runtime UID (not just root).
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/share/ms-playwright
 ENV PATH=$PNPM_HOME:$PATH
 
 # Step 1: replace Debian-bundled Node/npm with NodeSource Node ${NODE_MAJOR}.x.
@@ -72,6 +78,30 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     paperclipai --version || true; \
     rm -rf /tmp/*
 
+# Step 4: Install bun (required to build gstack browser tooling).
+# BUN_INSTALL=/usr/local places the binary at /usr/local/bin/bun which is already
+# on every user's PATH, avoiding per-user profile edits.
+RUN set -eux; \
+    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash; \
+    bun --version
+
+# Step 5: Clone and build gstack (Garry Tan's engineering workflow toolkit).
+# gstack turns Claude Code into a virtual engineering team: /review, /qa, /ship,
+# /plan-*, /office-hours, /investigate and ~23 other skills.
+# We pre-build all binaries (browse, design, make-pdf) so container startup is fast.
+# Chromium for /qa is installed to PLAYWRIGHT_BROWSERS_PATH (/usr/share/ms-playwright)
+# and made world-readable so any HERMES_UID can use it at runtime.
+# GSTACK_SKIP_COREUTILS=1 suppresses the macOS-only coreutils install probe.
+RUN --mount=type=cache,target=/root/.bun/install/cache,sharing=locked \
+    set -eux; \
+    git clone --depth 1 --single-branch --branch "${GSTACK_REF}" \
+      https://github.com/garrytan/gstack.git /opt/gstack; \
+    cd /opt/gstack; \
+    bun install --frozen-lockfile; \
+    bunx playwright install --with-deps chromium; \
+    GSTACK_SKIP_COREUTILS=1 bun run build; \
+    chmod -R a+rX /opt/gstack /usr/share/ms-playwright
+
 # Make the npm global lib + bin world-readable so any HERMES_UID can
 # resolve `paperclipai` at runtime (matches Hermes' chmod -R a+rX /opt/hermes).
 # PNPM_HOME may be empty if we never `pnpm add -g`'d anything — chmod only
@@ -104,6 +134,10 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 # Paperclip's API server defaults to :3100; Hermes uses 8642 (gateway)
 # and 9119 (dashboard). Document them all.
 EXPOSE 3100 8642 9119
+
+# gstack is installed at /opt/gstack.  A companion init service in
+# docker-compose.yml copies it into the workspace volume at startup so
+# Claude Code sessions inside hermes-workspace pick up all gstack skills.
 
 # Inherit Hermes' ENTRYPOINT (tini -> /opt/hermes/docker/entrypoint.sh).
 # No CMD override; Hermes' default behaviour is preserved.
