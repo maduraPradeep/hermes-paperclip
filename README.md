@@ -1,18 +1,19 @@
 # hermes-paperclip
 
-A single Docker image that bundles **[Hermes Agent](https://hermes-agent.nousresearch.com/)** (Nous Research) and **[Paperclip](https://docs.paperclip.ing/)** (`paperclipai`) so you can run both autonomous-agent platforms from one image.
+A single Docker image that bundles **[Hermes Agent](https://hermes-agent.nousresearch.com/)** (Nous Research), **[Paperclip](https://docs.paperclip.ing/)** (`paperclipai`), and **[gstack](https://github.com/garrytan/gstack)** (Garry Tan's Claude Code engineering workflow toolkit) so you can run all three from one image.
 
 - **Base:** `nousresearch/hermes-agent:latest` (Debian 13 trixie)
 - **Node.js:** v22 (NodeSource), upgraded from Hermes' bundled Node 20
 - **Paperclip:** `paperclipai` installed globally (`/usr/bin/paperclipai`)
 - **Hermes:** untouched at `/opt/hermes/.venv/bin/hermes`, original `ENTRYPOINT` preserved
+- **gstack:** pre-built at `/opt/gstack`; skills registered in the workspace volume at startup
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `Dockerfile` | Builds the combined image |
-| `docker-compose.yml` | Runs Hermes gateway + dashboard + Paperclip + nginx + certbot |
+| `Dockerfile` | Builds the combined image (Hermes + Paperclip + gstack) |
+| `docker-compose.yml` | Runs Hermes gateway + dashboard + Paperclip + gstack-init + nginx + certbot |
 | `nginx/nginx.conf` | Top-level nginx config (TLS defaults, gzip, WebSocket map) |
 | `nginx/conf.d/00-acme.conf` | Port 80: serves ACME challenge, 301s everything else to HTTPS |
 | `nginx/conf.d/hermes.conf.template` | HTTPS reverse proxy → `hermes-dashboard:9119` |
@@ -257,8 +258,66 @@ Both directories are stateless from the image's perspective — you can `docker 
 
 **Paperclip returns "host not allowed" after switching to a custom domain.** Run `docker compose exec paperclip paperclipai allowed-hostname <your-domain>` once.
 
+## gstack
+
+[gstack](https://github.com/garrytan/gstack) is Garry Tan's open-source Claude Code engineering workflow toolkit. It turns Claude Code into a virtual engineering team with ~23 specialist slash commands.
+
+### How it integrates
+
+gstack is compiled into the image at `/opt/gstack` during the Docker build (requires `bun`, which the image also installs). When the stack starts, a one-shot `gstack-init` service:
+
+1. Copies `/opt/gstack` into `./data/workspace/.claude/skills/gstack/`
+2. Runs `gstack/setup --no-prefix` to register all skill symlinks at `./data/workspace/.claude/skills/`
+
+Because `./data/workspace` is the `hermes-workspace` container's home volume, any Claude Code session running inside that workspace automatically picks up all gstack skills.
+
+### Available skills (once registered)
+
+| Skill | Role |
+|---|---|
+| `/office-hours` | Product interrogation — 6 forcing questions |
+| `/plan-ceo-review` | Strategic challenge before building |
+| `/plan-eng-review` | Architecture lock-in before coding |
+| `/plan-design-review` | Design sign-off before implementation |
+| `/review` | Multi-specialist code review (security, perf, UX) |
+| `/ship` | PR creation with full pre-flight checks |
+| `/qa` | Headless browser QA against a live URL |
+| `/investigate` | Root cause debugging methodology |
+| `/retro` | Weekly engineering retrospective |
+| `/cso` | OWASP + STRIDE security audit |
+| `/autoplan` | End-to-end: plan → implement → ship |
+| … | See `gstack --list` or [github.com/garrytan/gstack](https://github.com/garrytan/gstack) |
+
+### Upgrading gstack
+
+Inside the `hermes-workspace` container:
+
+```bash
+cd ~/.claude/skills/gstack
+git pull
+./setup --quiet --no-prefix
+```
+
+Or rebuild the image to pull the latest gstack HEAD:
+
+```bash
+docker compose build --no-cache hermes
+docker compose up -d
+```
+
+### Build arg
+
+| Arg | Default | What it does |
+|---|---|---|
+| `GSTACK_REF` | `main` | Branch / tag / commit to clone |
+
+```bash
+docker build --build-arg GSTACK_REF=v1.2.3 -t hermes-paperclip:latest .
+```
+
 ## References
 
 - Hermes: https://hermes-agent.nousresearch.com/ · [Docker Hub](https://hub.docker.com/r/nousresearch/hermes-agent) · [GitHub](https://github.com/NousResearch/hermes-agent)
 - Paperclip: https://docs.paperclip.ing/ · [npm](https://www.npmjs.com/package/paperclipai) · [GitHub](https://github.com/paperclipai/paperclip)
+- gstack: [github.com/garrytan/gstack](https://github.com/garrytan/gstack)
 - Reference image (Node-20 base, this image started from there): [MinuteCode/paperclip-hermes](https://github.com/MinuteCode/paperclip-hermes)

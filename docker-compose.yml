@@ -133,6 +133,45 @@ services:
     ports:
       - "3100:3100"   # Paperclip
 
+  # One-shot init container: copies the pre-built gstack from /opt/gstack
+  # (baked into the hermes-paperclip image) into the workspace volume and
+  # runs `./setup` to register all skill symlinks under
+  # ./data/workspace/.claude/skills/ so Claude Code sessions inside
+  # hermes-workspace pick up /review, /qa, /ship, /plan-*, etc.
+  # The container exits 0 on completion and is never restarted.
+  gstack-init:
+    image: hermes-paperclip:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gstack-init
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        SKILLS_DIR=/workspace/.claude/skills
+        GSTACK_DIR="$SKILLS_DIR/gstack"
+        if [ ! -d "$GSTACK_DIR/.git" ]; then
+          echo "gstack-init: copying gstack into workspace…"
+          mkdir -p "$SKILLS_DIR"
+          cp -rp /opt/gstack "$GSTACK_DIR"
+        fi
+        echo "gstack-init: registering skill symlinks…"
+        cd "$GSTACK_DIR"
+        HOME=/workspace GSTACK_SKIP_COREUTILS=1 \
+          ./setup --quiet --no-prefix 2>/dev/null || true
+        # Fix ownership so hermes-workspace (which runs as HERMES_UID) can
+        # read/write all Claude config and gstack state files.
+        chown -R "${HERMES_UID:-1000}:${HERMES_GID:-1000}" \
+          /workspace/.claude /workspace/.gstack 2>/dev/null || true
+        echo "gstack-init: done."
+    environment:
+      HERMES_UID: ${HERMES_UID:-1000}
+      HERMES_GID: ${HERMES_GID:-1000}
+    volumes:
+      - ./data/workspace:/workspace
+
   hermes-workspace:
     image: ghcr.io/outsourc-e/hermes-workspace:latest
     container_name: hermes-workspace
@@ -164,3 +203,5 @@ services:
     depends_on:
       hermes:
         condition: service_healthy
+      gstack-init:
+        condition: service_completed_successfully
