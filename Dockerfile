@@ -82,6 +82,10 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 # BUN_INSTALL=/usr/local places the binary at /usr/local/bin/bun which is already
 # on every user's PATH, avoiding per-user profile edits.
 RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends unzip; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
     curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash; \
     bun --version
 
