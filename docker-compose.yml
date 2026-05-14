@@ -151,19 +151,19 @@ services:
       - |
         set -e
         SKILLS_DIR=/workspace/.claude/skills
-        GSTACK_DIR="$SKILLS_DIR/gstack"
-        if [ ! -d "$GSTACK_DIR/.git" ]; then
-          echo "gstack-init: copying gstack into workspace…"
-          mkdir -p "$SKILLS_DIR"
-          cp -rp /opt/gstack "$GSTACK_DIR"
+        GSTACK_DIR="$$SKILLS_DIR/gstack"
+        if [ ! -d "$$GSTACK_DIR/.git" ]; then
+          echo "gstack-init: copying gstack into workspace..."
+          mkdir -p "$$SKILLS_DIR"
+          cp -rp /opt/gstack "$$GSTACK_DIR"
         fi
-        echo "gstack-init: registering skill symlinks…"
-        cd "$GSTACK_DIR"
+        echo "gstack-init: registering skill symlinks..."
+        cd "$$GSTACK_DIR"
         HOME=/workspace GSTACK_SKIP_COREUTILS=1 \
           ./setup --quiet --no-prefix 2>/dev/null || true
         # Fix ownership so hermes-workspace (which runs as HERMES_UID) can
         # read/write all Claude config and gstack state files.
-        chown -R "${HERMES_UID:-1000}:${HERMES_GID:-1000}" \
+        chown -R "$${HERMES_UID:-1000}:$${HERMES_GID:-1000}" \
           /workspace/.claude /workspace/.gstack 2>/dev/null || true
         echo "gstack-init: done."
     environment:
